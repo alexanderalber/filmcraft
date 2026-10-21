@@ -146,7 +146,8 @@ rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpac
 {clip?, lut: lib:<id>|builtin:<id>|"", path?}`, `lumetri.setSection {clip?, section, on?}`,
 `lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`,
 `lumetri.whiteBalance {clip?, x?, y?, color?}` (WB Selector: Temperature and Tint that make the point
-at x, y (0..1) of the clip at the playhead, read before Lumetri's own grade, or a linear `color` neutral). Without
+at x, y (0..1) of the clip at the playhead, read before Lumetri's own grade (refused when the playhead
+is not on the clip), or a linear `color` neutral). Without
 params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
 `colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Lumetri panel ids:
 `lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,

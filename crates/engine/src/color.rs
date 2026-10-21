@@ -546,6 +546,11 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
     let seq_id = s.state.active_sequence.ok_or_else(|| bad(cmd, "no active sequence"))?;
     let q = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let (_, it) = q.find_item(clip).ok_or_else(|| bad(cmd, "no such clip"))?;
+    // a point is read from the picture at the playhead: on another clip (or none) that is not the
+    // picture clicked, and the clip's first or last frame would be sampled silently
+    if given.is_none() && !(it.start <= s.playhead() && s.playhead() < it.end()) {
+        return Err(bad(cmd, "place the playhead over the clip to pick from its picture"));
+    }
     let t = s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start));
     let mt = it.source_time_at(t);
     let c = match given {

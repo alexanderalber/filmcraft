@@ -373,3 +373,34 @@ fn white_balance_selector_keyframes_an_animated_slider() {
     assert_eq!(tint.keyframes.len(), 1, "the keyframe at the playhead takes the new value");
     assert!(tint.f64_at(s.active_sequence().unwrap().find_item(clip).unwrap().1.source_time_at(s.playhead())) > 10.0);
 }
+
+#[test]
+fn white_balance_selector_needs_the_playhead_on_the_clip() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let matte = *s.project.items.iter().find(|(_, i)| i.name == "Color Matte").unwrap().0;
+    s.execute("project.matteColor", json!({"item": matte.0, "color": "#a09080"})).unwrap();
+    s.edit_sequence("test", |q, _, _| {
+        q.find_item_mut(clip).unwrap().1.item = matte;
+        Ok(())
+    })
+    .unwrap();
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    let idx = it.effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    let temp = |s: &Session| s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[idx].param("temperature").and_then(|p| p.value.as_f64());
+    let before = temp(&s);
+    // past the clip's last frame (and at its end, which is outside it) a point pick is refused,
+    // rather than sampling the clip's last frame, which is not the picture clicked
+    for t in [it.end(), it.end() + filmcraft_time::Tick(it.duration.0 / 2)] {
+        s.execute("playhead.set", json!({"time": t.0})).unwrap();
+        let r = s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": 0.3, "y": 0.6}));
+        assert!(r.is_err(), "playhead at {t:?}: {r:?}");
+        assert_eq!(temp(&s), before, "nothing changes");
+    }
+    // a given colour needs no picture
+    s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "color": [0.6, 0.5, 0.4]})).unwrap();
+    // and back on the clip the point pick works
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": 0.3, "y": 0.6})).unwrap();
+}
