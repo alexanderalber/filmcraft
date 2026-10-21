@@ -553,6 +553,11 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
     let q = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let working = q.settings.color.working;
     let (_, it) = q.find_item(clip).ok_or_else(|| bad(cmd, "no such clip"))?;
+    // a point is read from the picture at the playhead: on another clip (or none) that is not the
+    // picture clicked, and the clip's first or last frame would be sampled silently
+    if given.is_none() && !(it.start <= s.playhead() && s.playhead() < it.end()) {
+        return Err(bad(cmd, "place the playhead over the clip to pick from its picture"));
+    }
     let t = s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start));
     let mt = it.source_time_at(t);
     let e = it.effects.get(idx).cloned().ok_or_else(|| bad(cmd, "no Lumetri"))?;
@@ -560,7 +565,10 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
         Some(c) => c,
         None => {
             // the clip as the key sees it: this Lumetri without HSL Secondary and the sharpening
-            // after it, the effects after Lumetri switched off
+            // after it, the standard effects after Lumetri switched off. The intrinsic ones stay:
+            // Motion places the picture where the Program monitor shows it, and Opacity never
+            // reaches the colour (render_clip leaves its amount out, masks only scale
+            // premultiplied alpha, which sample_linear divides out).
             let mut probe = (*s.project).clone();
             if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
                 for (i, pe) in pi.effects.iter_mut().enumerate().skip(idx) {
@@ -571,7 +579,7 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
                                 *pp = filmcraft_project::Param::new(v);
                             }
                         }
-                    } else {
+                    } else if !pe.def().is_some_and(|d| d.intrinsic) {
                         pe.enabled = false;
                     }
                 }

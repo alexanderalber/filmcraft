@@ -147,7 +147,8 @@ rec2100-hlg, wideGamut, autoToneMap}`, `clip.interpretFootage {items?, colorSpac
 `lumetri.applyMatch {clip?, referenceTime|referenceFrame|referenceTimecode, faceDetection?}`,
 `lumetri.hslKey {clip?, mode: set|add|remove, x?, y?, color?}` (HSL Secondary ▸ Set / Add / Remove
 color: the key's Hue, Hue Range, Saturation Min and Luma Min / Max from the point at x, y (0..1) of
-the clip at the playhead, read before HSL Secondary, or from a linear `color`). Without
+the clip at the playhead, read before HSL Secondary (refused when the playhead is not on the
+clip), or from a linear `color`). Without
 params the menu entries open dialogs (ids `colorDialog.space.<id>`, `colorDialog.working.<id>`,
 `colorDialog.wideGamut`, `colorDialog.autoToneMap`, `colorDialog.ok|cancel`). Lumetri panel ids:
 `lumetri.input_lut`, `lumetri.look_lut`, `lumetri.switch.<section>`, `lumetri.section.<section>`,
