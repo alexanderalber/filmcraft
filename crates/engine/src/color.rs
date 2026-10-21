@@ -2,6 +2,9 @@
 //! `color.spaces`, `media.colorInfo`), the project LUT library (`lut.*`), Lumetri LUT slots and
 //! section switches (`lumetri.*`).
 //!
+//! `lumetri.whiteBalance` is Basic Correction ▸ WB Selector: it sets Temperature and Tint so the
+//! picked point (or a given colour) comes out neutral.
+//!
 //! Lumetri commands address a clip by `clip` (default: the first selected video clip with
 //! Lumetri Color, else the first selected video clip — Lumetri is added if missing).
 //!
@@ -13,7 +16,7 @@ use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, has_seq, item_p, str_p, time_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, f64_p, has_seq, item_p, str_p, time_p};
 use crate::{Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -71,6 +74,14 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
             r#"{"clip":id?,"referenceTime":ticks?|"referenceFrame":n?|"referenceTimecode":str?,"faceDetection":bool=true}"#,
             has_seq,
             apply_match,
+        ),
+        spec(
+            "lumetri.whiteBalance",
+            "White Balance Selector",
+            &[],
+            r#"{"clip":id?,"x":num=0.5,"y":num=0.5 (the picked point, 0..1 across and down the picture),"color":[r,g,b]? (a linear colour that should be neutral, instead of a point)}"#,
+            has_seq,
+            white_balance,
         ),
         spec(
             "lumetri.setSection",
@@ -489,4 +500,94 @@ fn apply_match(s: &mut Session, p: &Value) -> Result<Value> {
         "lightness": m.lightness, "saturation": m.saturation,
         "distanceBefore": m.before, "distanceAfter": m.after,
     }))
+}
+
+/// The average linear colour of the 5×5 pixels around `(x, y)` (0..1 across and down) of a
+/// premultiplied image, divided by its alpha. `None` where the picture is empty or transparent.
+pub(crate) fn sample_linear(img: &filmcraft_render::Image, x: f64, y: f64) -> Option<[f32; 3]> {
+    if img.w == 0 || img.h == 0 || img.px.len() < img.w.saturating_mul(img.h).saturating_mul(4) {
+        return None;
+    }
+    let cx = ((x.clamp(0.0, 1.0) * img.w as f64) as usize).min(img.w - 1);
+    let cy = ((y.clamp(0.0, 1.0) * img.h as f64) as usize).min(img.h - 1);
+    let mut sum = [0f64; 4];
+    for py in cy.saturating_sub(2)..=(cy + 2).min(img.h - 1) {
+        for px in cx.saturating_sub(2)..=(cx + 2).min(img.w - 1) {
+            let i = (py * img.w + px) * 4;
+            for (k, s) in sum.iter_mut().enumerate() {
+                *s += f64::from(*img.px.get(i + k)?);
+            }
+        }
+    }
+    (sum[3] > 1e-6).then(|| [0, 1, 2].map(|k| (sum[k] / sum[3]) as f32))
+}
+
+/// Lumetri ▸ Basic Correction ▸ WB Selector (see `filmcraft_render::effects::lumetri_white_balance`):
+/// set Temperature and Tint so the picked point of the clip at the playhead (or `color`) becomes
+/// neutral, in one undo step. The point is read where Lumetri's white balance sees it: the clip
+/// with the effects before Lumetri and its Input LUT, but none of its other corrections, so
+/// picking the same spot again gives the same balance. Animated sliders get a keyframe at the
+/// playhead.
+fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "lumetri.whiteBalance";
+    let given = match p.get("color") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) if a.len() >= 3 => {
+            let c: Vec<f32> = a.iter().take(3).filter_map(Value::as_f64).map(|v| v as f32).collect();
+            Some(<[f32; 3]>::try_from(c).map_err(|_| bad(cmd, "`color` must be three numbers"))?)
+        }
+        Some(_) => return Err(bad(cmd, "`color` must be [r, g, b]")),
+    };
+    let (x, y) = (f64_p(p, "x").unwrap_or(0.5), f64_p(p, "y").unwrap_or(0.5));
+    if !x.is_finite() || !y.is_finite() {
+        return Err(bad(cmd, "`x` and `y` must be numbers"));
+    }
+    let (clip, idx) = lumetri_clip(s, p, cmd)?;
+    let seq_id = s.state.active_sequence.ok_or_else(|| bad(cmd, "no active sequence"))?;
+    let q = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
+    let (_, it) = q.find_item(clip).ok_or_else(|| bad(cmd, "no such clip"))?;
+    let t = s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start));
+    let mt = it.source_time_at(t);
+    let c = match given {
+        Some(c) => c,
+        None => {
+            // the clip as Lumetri's white balance sees it: a default Lumetri with only the Input LUT
+            // (neutral at every other setting), the effects after it switched off
+            let mut probe = (*s.project).clone();
+            let def = filmcraft_project::find_effect("lumetri").ok_or_else(|| bad(cmd, "no Lumetri"))?;
+            if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
+                let lut = pi.effects.get(idx).and_then(|e| e.param("input_lut")).cloned();
+                let mut plain = def.instance();
+                if let Some(l) = lut {
+                    plain.params.insert("input_lut".into(), l);
+                }
+                for (i, e) in pi.effects.iter_mut().enumerate().skip(idx) {
+                    if i == idx {
+                        *e = plain.clone();
+                    } else {
+                        e.enabled = false;
+                    }
+                }
+            }
+            let provider = s.media.provider(s.project.clone(), s.services.clone());
+            let opts = filmcraft_render::RenderOptions { scale: 0.5, working_output: true, ..Default::default() };
+            let img = filmcraft_render::render_clip(&probe, seq_id, clip, t, opts, &provider).ok_or_else(|| bad(cmd, "the clip has no picture"))?;
+            sample_linear(&img, x, y).ok_or_else(|| bad(cmd, "nothing to sample there: pick a point on the clip's picture"))?
+        }
+    };
+    let [temperature, tint] = filmcraft_render::effects::lumetri_white_balance(c)
+        .ok_or_else(|| bad(cmd, "that colour cannot be balanced (too dark or not a colour); pick a lighter grey or white"))?;
+    let values = [("temperature", f64::from(temperature)), ("tint", f64::from(tint))];
+    s.edit_sequence("White Balance", |q, _, _| {
+        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+        let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+        for (k, v) in values {
+            let v = ParamValue::Float(v);
+            e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).set_at(mt, v);
+        }
+        e.params.entry("basic_on".to_string()).or_insert_with(|| filmcraft_project::Param::new(ParamValue::Bool(true))).value = ParamValue::Bool(true);
+        e.enabled = true;
+        Ok(())
+    })?;
+    Ok(json!({"clip": clip.0, "color": c, "temperature": temperature, "tint": tint}))
 }

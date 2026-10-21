@@ -254,3 +254,76 @@ fn hdr_lumetri_and_mastering_metadata_through_commands() {
     let r = s.execute("media.colorInfo", json!({"item": item.0})).unwrap();
     assert!(r["hdrMetadata"].is_null() && r["toneMapPeakNits"].is_null(), "{r}");
 }
+
+#[test]
+fn white_balance_selector_neutralises_the_picked_point() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    // the clip shows the demo's Color Matte in a warm grey, a picture with one cast everywhere
+    let matte = *s.project.items.iter().find(|(_, i)| i.name == "Color Matte").unwrap().0;
+    s.execute("project.matteColor", json!({"item": matte.0, "color": "#a09080"})).unwrap();
+    s.edit_sequence("test", |q, _, _| {
+        q.find_item_mut(clip).unwrap().1.item = matte;
+        Ok(())
+    })
+    .unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    // the middle of the clip, past the demo's fade from black
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let idx = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    // a grade already on the clip does not move the pick: it is read before the white balance
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "temperature", "value": 60.0})).unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "contrast", "value": 40.0})).unwrap();
+    let (x, y) = (0.3, 0.6);
+    let r = s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": x, "y": y})).unwrap();
+    assert!(r["temperature"].as_f64().unwrap() < -10.0, "a warm cast is cooled: {r}");
+    let again = s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": x, "y": y})).unwrap();
+    assert_eq!(r["temperature"], again["temperature"], "picking the same spot again keeps the balance");
+    let picked: Vec<f32> = r["color"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+    assert!((picked[0] - picked[1]).abs() + (picked[2] - picked[1]).abs() > 0.01, "the matte has a cast: {r}");
+    // with the sliders set, the clip at that point is grey (the contrast curve keeps grey grey)
+    let seq = s.state.active_sequence.unwrap();
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale: 0.5, working_output: true, ..Default::default() };
+    let img = filmcraft_render::render_clip(&s.project, seq, clip, s.playhead(), opts, &provider).unwrap();
+    let o = super::color::sample_linear(&img, x, y).unwrap();
+    let spread = (o[0] - o[1]).abs().max((o[2] - o[1]).abs()) / o[1].max(1e-3);
+    assert!(spread < 0.02, "neutral after the pick: {o:?} ({r})");
+    // one undo step per pick back to the earlier grade
+    let param = |s: &Session, k: &str| s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[idx].param(k).and_then(|p| p.value.as_f64());
+    for _ in 0..2 {
+        assert_ne!(param(&s, "temperature"), Some(60.0));
+        s.execute("edit.undo", json!({})).unwrap();
+    }
+    assert_eq!(param(&s, "temperature"), Some(60.0));
+    assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.effects[idx].param("contrast").and_then(|p| p.value.as_f64()), Some(40.0));
+    // a given colour: a warm grey is cooled
+    let r = s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "color": [0.3, 0.25, 0.18]})).unwrap();
+    assert!(r["temperature"].as_f64().unwrap() < 0.0, "{r}");
+    // hostile parameters are refused, nothing changes
+    for p in [
+        json!({"clip": clip.0, "color": [0.0, 0.0, 0.0]}),
+        json!({"clip": clip.0, "color": [0.2, 0.2]}),
+        json!({"clip": clip.0, "color": ["a", 0.2, 0.2]}),
+        json!({"clip": clip.0, "color": "white"}),
+        json!({"clip": clip.0, "color": [-1.0, 1e30, 0.2]}),
+    ] {
+        assert!(s.execute("lumetri.whiteBalance", p.clone()).is_err(), "{p}");
+    }
+}
+
+#[test]
+fn white_balance_selector_keyframes_an_animated_slider() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let idx = s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    s.execute("effects.setParam", json!({"clip": clip.0, "effect": idx, "param": "tint", "value": 10.0, "keyframe": true})).unwrap();
+    s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "color": [0.2, 0.3, 0.2]})).unwrap();
+    let q = s.active_sequence().unwrap();
+    let e = &q.find_item(clip).unwrap().1.effects[idx];
+    let tint = e.param("tint").unwrap();
+    assert_eq!(tint.keyframes.len(), 1, "the keyframe at the playhead takes the new value");
+    assert!(tint.f64_at(s.active_sequence().unwrap().find_item(clip).unwrap().1.source_time_at(s.playhead())) > 10.0);
+}
