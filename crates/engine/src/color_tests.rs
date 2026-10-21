@@ -314,6 +314,52 @@ fn white_balance_selector_neutralises_the_picked_point() {
 }
 
 #[test]
+fn white_balance_selector_samples_where_motion_places_the_clip() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let matte = *s.project.items.iter().find(|(_, i)| i.name == "Color Matte").unwrap().0;
+    // a picture whose cast changes across the frame: a 4-Color Gradient of four tinted greys
+    let mut grad = filmcraft_project::find_effect("four_color_gradient").unwrap().instance();
+    for (k, c) in [("c1", [0.7, 0.6, 0.5, 1.0]), ("c2", [0.5, 0.6, 0.7, 1.0]), ("c3", [0.55, 0.7, 0.55, 1.0]), ("c4", [0.65, 0.5, 0.65, 1.0])] {
+        grad.params.get_mut(k).unwrap().value = ParamValue::Color(c);
+    }
+    let (w, h) = {
+        let q = s.active_sequence().unwrap();
+        (q.settings.width as f64, q.settings.height as f64)
+    };
+    s.edit_sequence("test", |q, _, _| {
+        let it = q.find_item_mut(clip).unwrap().1;
+        it.item = matte;
+        it.effects.insert(0, grad);
+        // Motion: half size, in the top left quarter of the frame
+        let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+        m.params.insert("scale".into(), filmcraft_project::Param::new(ParamValue::Float(50.0)));
+        m.params.insert("position".into(), filmcraft_project::Param::new(ParamValue::Vec2(filmcraft_geom::Vec2::new(w / 4.0, h / 4.0))));
+        Ok(())
+    })
+    .unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    // Lumetri goes after the gradient, before the intrinsic Motion
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"})).unwrap();
+    let effects = &s.active_sequence().unwrap().find_item(clip).unwrap().1.effects;
+    let idx = effects.iter().position(|e| e.effect == "lumetri").unwrap();
+    assert!(effects.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri in the stack");
+    // a point on the placed clip, in Program monitor coordinates, is neutral after the pick
+    let (x, y) = (0.15, 0.2);
+    let r = s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": x, "y": y})).unwrap();
+    let seq = s.state.active_sequence.unwrap();
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let opts = filmcraft_render::RenderOptions { scale: 0.5, working_output: true, ..Default::default() };
+    let img = filmcraft_render::render_clip(&s.project, seq, clip, s.playhead(), opts, &provider).unwrap();
+    let o = super::color::sample_linear(&img, x, y).unwrap();
+    let spread = (o[0] - o[1]).abs().max((o[2] - o[1]).abs()) / o[1].max(1e-3);
+    assert!(spread < 0.02, "neutral where it was picked: {o:?} ({r})");
+    // outside the placed clip there is nothing to pick
+    assert!(s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": 0.8, "y": 0.8})).is_err());
+}
+
+#[test]
 fn white_balance_selector_keyframes_an_animated_slider() {
     let mut s = demo();
     let clip = pick_clip(&mut s);

@@ -552,7 +552,10 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
         Some(c) => c,
         None => {
             // the clip as Lumetri's white balance sees it: a default Lumetri with only the Input LUT
-            // (neutral at every other setting), the effects after it switched off
+            // (neutral at every other setting), the standard effects after it switched off. The
+            // intrinsic ones stay: Motion places the picture where the Program monitor shows it,
+            // and Opacity never reaches the colour (render_clip leaves its amount out, masks only
+            // scale premultiplied alpha, which sample_linear divides out).
             let mut probe = (*s.project).clone();
             let def = filmcraft_project::find_effect("lumetri").ok_or_else(|| bad(cmd, "no Lumetri"))?;
             if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
@@ -564,7 +567,7 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
                 for (i, e) in pi.effects.iter_mut().enumerate().skip(idx) {
                     if i == idx {
                         *e = plain.clone();
-                    } else {
+                    } else if !e.def().is_some_and(|d| d.intrinsic) {
                         e.enabled = false;
                     }
                 }
