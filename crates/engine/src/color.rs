@@ -602,17 +602,20 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
     let [temperature, tint] = filmcraft_render::effects::lumetri_white_balance(c)
         .ok_or_else(|| bad(cmd, "that colour cannot be balanced (too dark or not a colour); pick a lighter grey or white"))?;
     let values = [("temperature", f64::from(temperature)), ("tint", f64::from(tint))];
-    let (clip, idx) = lumetri_clip(s, &json!({"clip": clip.0}), cmd)?;
-    s.edit_sequence("White Balance", |q, _, _| {
-        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
-        for (k, v) in values {
-            let v = ParamValue::Float(v);
-            e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).set_at(mt, v);
-        }
-        e.params.entry("basic_on".to_string()).or_insert_with(|| filmcraft_project::Param::new(ParamValue::Bool(true))).value = ParamValue::Bool(true);
-        e.enabled = true;
-        Ok(())
+    // applying Lumetri (when the clip has none yet) and setting the balance is one undo step
+    s.edit_group("White Balance", |s| {
+        let (clip, idx) = lumetri_clip(s, &json!({"clip": clip.0}), cmd)?;
+        s.edit_sequence("White Balance", |q, _, _| {
+            let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+            let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+            for (k, v) in values {
+                let v = ParamValue::Float(v);
+                e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).set_at(mt, v);
+            }
+            e.params.entry("basic_on".to_string()).or_insert_with(|| filmcraft_project::Param::new(ParamValue::Bool(true))).value = ParamValue::Bool(true);
+            e.enabled = true;
+            Ok(())
+        })
     })?;
     Ok(json!({"clip": clip.0, "color": c, "temperature": temperature, "tint": tint}))
 }

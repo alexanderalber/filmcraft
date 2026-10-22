@@ -439,4 +439,8 @@ fn white_balance_selector_refused_leaves_no_lumetri_behind() {
     let idx = after.iter().position(|e| e.effect == "lumetri").expect("Lumetri applied");
     assert!(after.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri");
     assert!(after[idx].param("temperature").and_then(|p| p.value.as_f64()).is_some());
+    // applying Lumetri and setting the balance is one undo step: one Undo leaves no Lumetri behind
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step for the first pick");
+    assert_eq!(s.undo().as_deref(), Some("White Balance"));
+    assert_eq!(effects(&s), before, "Undo removes the balance and the Lumetri it applied");
 }
