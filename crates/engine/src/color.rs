@@ -612,17 +612,20 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let values = filmcraft_render::effects::lumetri_hsl_key_pick(&e, mt, working, c, mode).ok_or_else(|| bad(cmd, "that colour cannot be keyed"))?;
-    let (clip, idx) = lumetri_clip(s, &json!({"clip": clip.0}), cmd)?;
-    s.edit_sequence("HSL Key Color", |q, _, _| {
-        let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
-        let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
-        for (k, v) in values {
-            let v = ParamValue::Float(f64::from(v));
-            e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).set_at(mt, v);
-        }
-        e.params.entry("hsl_on".to_string()).or_insert_with(|| filmcraft_project::Param::new(ParamValue::Bool(true))).value = ParamValue::Bool(true);
-        e.enabled = true;
-        Ok(())
+    // applying Lumetri (when the clip has none yet) and setting the key is one undo step
+    s.edit_group("HSL Key Color", |s| {
+        let (clip, idx) = lumetri_clip(s, &json!({"clip": clip.0}), cmd)?;
+        s.edit_sequence("HSL Key Color", |q, _, _| {
+            let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
+            let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
+            for (k, v) in values {
+                let v = ParamValue::Float(f64::from(v));
+                e.params.entry(k.to_string()).or_insert_with(|| filmcraft_project::Param::new(v.clone())).set_at(mt, v);
+            }
+            e.params.entry("hsl_on".to_string()).or_insert_with(|| filmcraft_project::Param::new(ParamValue::Bool(true))).value = ParamValue::Bool(true);
+            e.enabled = true;
+            Ok(())
+        })
     })?;
     let mut out = json!({"clip": clip.0, "color": c});
     for (k, v) in values {

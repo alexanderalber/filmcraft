@@ -466,4 +466,8 @@ fn hsl_key_color_picker_refused_leaves_no_lumetri_behind() {
     let idx = after.iter().position(|e| e.effect == "lumetri").expect("Lumetri applied");
     assert!(after.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri");
     assert_eq!(after[idx].param("hsl_on").map(|p| &p.value), Some(&ParamValue::Bool(true)));
+    // applying Lumetri and setting the key is one undo step: one Undo leaves no Lumetri behind
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step for the first pick");
+    assert_eq!(s.undo().as_deref(), Some("HSL Key Color"));
+    assert_eq!(effects(&s), before, "Undo removes the key and the Lumetri it applied");
 }
