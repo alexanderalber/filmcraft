@@ -404,3 +404,39 @@ fn white_balance_selector_needs_the_playhead_on_the_clip() {
     s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
     s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": 0.3, "y": 0.6})).unwrap();
 }
+
+#[test]
+fn white_balance_selector_refused_leaves_no_lumetri_behind() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let (w, h) = {
+        let q = s.active_sequence().unwrap();
+        (q.settings.width as f64, q.settings.height as f64)
+    };
+    // a clip without Lumetri, at half size in the top left quarter: the bottom right is empty
+    s.edit_sequence("test", |q, _, _| {
+        let it = q.find_item_mut(clip).unwrap().1;
+        it.effects.retain(|e| e.effect != "lumetri");
+        let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+        m.params.insert("scale".into(), filmcraft_project::Param::new(ParamValue::Float(50.0)));
+        m.params.insert("position".into(), filmcraft_project::Param::new(ParamValue::Vec2(filmcraft_geom::Vec2::new(w / 4.0, h / 4.0))));
+        Ok(())
+    })
+    .unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    let effects = |s: &Session| s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.clone();
+    let (before, undo) = (effects(&s), s.history.undo.len());
+    // a transparent point and a colour that cannot be balanced are refused before Lumetri is applied
+    for p in [json!({"clip": clip.0, "x": 0.8, "y": 0.8}), json!({"clip": clip.0, "color": [0.0, 0.0, 0.0]})] {
+        assert!(s.execute("lumetri.whiteBalance", p.clone()).is_err(), "{p}");
+        assert_eq!(effects(&s), before, "no Lumetri added: {p}");
+        assert_eq!(s.history.undo.len(), undo, "no undo step: {p}");
+    }
+    // a point on the placed picture applies Lumetri where effects.apply puts it, before Motion
+    s.execute("lumetri.whiteBalance", json!({"clip": clip.0, "x": 0.15, "y": 0.2})).unwrap();
+    let after = effects(&s);
+    let idx = after.iter().position(|e| e.effect == "lumetri").expect("Lumetri applied");
+    assert!(after.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri");
+    assert!(after[idx].param("temperature").and_then(|p| p.value.as_f64()).is_some());
+}

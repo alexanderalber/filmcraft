@@ -173,8 +173,9 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "bytes": text.len()}))
 }
 
-/// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
-pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+/// The target clip and the index of its Lumetri effect, `None` when it has none yet. Changes
+/// nothing, so a command can validate its input before [`lumetri_clip`] applies Lumetri.
+pub(crate) fn lumetri_target(s: &Session, p: &Value, cmd: &str) -> Result<(ClipId, Option<usize>)> {
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
     let has = |c: &ClipId| seq.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.effect == "lumetri"));
@@ -186,9 +187,17 @@ pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(Cli
             sel.iter().copied().find(has).or(sel.first().copied()).ok_or_else(|| bad(cmd, "select a video clip"))?
         }
     };
-    if !has(&clip) {
-        s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
+    let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri"));
+    Ok((clip, idx))
+}
+
+/// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
+pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+    let (clip, idx) = lumetri_target(s, p, cmd)?;
+    if let Some(idx) = idx {
+        return Ok((clip, idx));
     }
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri")).ok_or_else(|| bad(cmd, "no Lumetri"))?;
     Ok((clip, idx))
@@ -542,7 +551,9 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
     if !x.is_finite() || !y.is_finite() {
         return Err(bad(cmd, "`x` and `y` must be numbers"));
     }
-    let (clip, idx) = lumetri_clip(s, p, cmd)?;
+    // everything is validated before the project changes: a refused pick must not leave a
+    // Lumetri applied to the clip (nor an undo step for it)
+    let (clip, found) = lumetri_target(s, p, cmd)?;
     let seq_id = s.state.active_sequence.ok_or_else(|| bad(cmd, "no active sequence"))?;
     let q = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let (_, it) = q.find_item(clip).ok_or_else(|| bad(cmd, "no such clip"))?;
@@ -553,6 +564,8 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let t = s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start));
     let mt = it.source_time_at(t);
+    // where Lumetri is, or where `effects.apply` will put it: before the intrinsic effects
+    let at = found.unwrap_or_else(|| it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len()));
     let c = match given {
         Some(c) => c,
         None => {
@@ -564,13 +577,16 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
             let mut probe = (*s.project).clone();
             let def = filmcraft_project::find_effect("lumetri").ok_or_else(|| bad(cmd, "no Lumetri"))?;
             if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
-                let lut = pi.effects.get(idx).and_then(|e| e.param("input_lut")).cloned();
+                let lut = found.and_then(|i| pi.effects.get(i)).and_then(|e| e.param("input_lut")).cloned();
                 let mut plain = def.instance();
                 if let Some(l) = lut {
                     plain.params.insert("input_lut".into(), l);
                 }
-                for (i, e) in pi.effects.iter_mut().enumerate().skip(idx) {
-                    if i == idx {
+                if found.is_none() {
+                    pi.effects.insert(at.min(pi.effects.len()), plain.clone());
+                }
+                for (i, e) in pi.effects.iter_mut().enumerate().skip(at) {
+                    if i == at {
                         *e = plain.clone();
                     } else if !e.def().is_some_and(|d| d.intrinsic) {
                         e.enabled = false;
@@ -586,6 +602,7 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
     let [temperature, tint] = filmcraft_render::effects::lumetri_white_balance(c)
         .ok_or_else(|| bad(cmd, "that colour cannot be balanced (too dark or not a colour); pick a lighter grey or white"))?;
     let values = [("temperature", f64::from(temperature)), ("tint", f64::from(tint))];
+    let (clip, idx) = lumetri_clip(s, &json!({"clip": clip.0}), cmd)?;
     s.edit_sequence("White Balance", |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;
