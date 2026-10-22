@@ -173,8 +173,9 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "bytes": text.len()}))
 }
 
-/// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
-pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+/// The target clip and the index of its Lumetri effect, `None` when it has none yet. Changes
+/// nothing, so a command can validate its input before [`lumetri_clip`] applies Lumetri.
+pub(crate) fn lumetri_target(s: &Session, p: &Value, cmd: &str) -> Result<(ClipId, Option<usize>)> {
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let video = |c: &ClipId| seq.find_item(*c).is_some_and(|(t, _)| seq.track(t).is_some_and(|t| t.kind == TrackKind::Video));
     let has = |c: &ClipId| seq.find_item(*c).is_some_and(|(_, it)| it.effects.iter().any(|e| e.effect == "lumetri"));
@@ -186,9 +187,17 @@ pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(Cli
             sel.iter().copied().find(has).or(sel.first().copied()).ok_or_else(|| bad(cmd, "select a video clip"))?
         }
     };
-    if !has(&clip) {
-        s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
+    let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri"));
+    Ok((clip, idx))
+}
+
+/// The target clip and the index of its Lumetri effect (applying Lumetri when missing).
+pub(crate) fn lumetri_clip(s: &mut Session, p: &Value, cmd: &str) -> Result<(ClipId, usize)> {
+    let (clip, idx) = lumetri_target(s, p, cmd)?;
+    if let Some(idx) = idx {
+        return Ok((clip, idx));
     }
+    s.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}))?;
     let seq = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let idx = seq.find_item(clip).and_then(|(_, it)| it.effects.iter().position(|e| e.effect == "lumetri")).ok_or_else(|| bad(cmd, "no Lumetri"))?;
     Ok((clip, idx))
@@ -548,7 +557,9 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
     if !x.is_finite() || !y.is_finite() {
         return Err(bad(cmd, "`x` and `y` must be numbers"));
     }
-    let (clip, idx) = lumetri_clip(s, p, cmd)?;
+    // everything is validated before the project changes: a refused pick must not leave a
+    // Lumetri applied to the clip (nor an undo step for it)
+    let (clip, found) = lumetri_target(s, p, cmd)?;
     let seq_id = s.state.active_sequence.ok_or_else(|| bad(cmd, "no active sequence"))?;
     let q = s.active_sequence().ok_or_else(|| bad(cmd, "no active sequence"))?;
     let working = q.settings.color.working;
@@ -560,7 +571,14 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let t = s.playhead().clamp(it.start, (it.end() - filmcraft_time::Tick(1)).max(it.start));
     let mt = it.source_time_at(t);
-    let e = it.effects.get(idx).cloned().ok_or_else(|| bad(cmd, "no Lumetri"))?;
+    // this Lumetri, or the default one `effects.apply` will put before the intrinsic effects
+    let (at, e) = match found {
+        Some(i) => (i, it.effects.get(i).cloned().ok_or_else(|| bad(cmd, "no Lumetri"))?),
+        None => {
+            let at = it.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(it.effects.len());
+            (at, filmcraft_project::find_effect("lumetri").ok_or_else(|| bad(cmd, "no Lumetri"))?.instance())
+        }
+    };
     let c = match given {
         Some(c) => c,
         None => {
@@ -571,8 +589,11 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
             // premultiplied alpha, which sample_linear divides out).
             let mut probe = (*s.project).clone();
             if let Some((_, pi)) = probe.sequence_mut(seq_id).and_then(|q| q.find_item_mut(clip)) {
-                for (i, pe) in pi.effects.iter_mut().enumerate().skip(idx) {
-                    if i == idx {
+                if found.is_none() {
+                    pi.effects.insert(at.min(pi.effects.len()), e.clone());
+                }
+                for (i, pe) in pi.effects.iter_mut().enumerate().skip(at) {
+                    if i == at {
                         pe.enabled = true;
                         for (k, v) in [("hsl_on", ParamValue::Bool(false)), ("sharpen", ParamValue::Float(0.0))] {
                             if let Some(pp) = pe.params.get_mut(k) {
@@ -591,6 +612,7 @@ fn hsl_key(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let values = filmcraft_render::effects::lumetri_hsl_key_pick(&e, mt, working, c, mode).ok_or_else(|| bad(cmd, "that colour cannot be keyed"))?;
+    let (clip, idx) = lumetri_clip(s, &json!({"clip": clip.0}), cmd)?;
     s.edit_sequence("HSL Key Color", |q, _, _| {
         let (_, it) = q.find_item_mut(clip).ok_or(filmcraft_edit::EditError::NoItem(clip))?;
         let e = it.effects.get_mut(idx).ok_or_else(|| bad(cmd, "no Lumetri"))?;

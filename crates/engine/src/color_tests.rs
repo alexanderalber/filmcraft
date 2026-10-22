@@ -431,3 +431,39 @@ fn hsl_key_color_picker_needs_the_playhead_on_the_clip() {
     s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
     s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": 0.4, "y": 0.5})).unwrap();
 }
+
+#[test]
+fn hsl_key_color_picker_refused_leaves_no_lumetri_behind() {
+    let mut s = demo();
+    let clip = pick_clip(&mut s);
+    let (w, h) = {
+        let q = s.active_sequence().unwrap();
+        (q.settings.width as f64, q.settings.height as f64)
+    };
+    // a clip without Lumetri, at half size in the top left quarter: the bottom right is empty
+    s.edit_sequence("test", |q, _, _| {
+        let it = q.find_item_mut(clip).unwrap().1;
+        it.effects.retain(|e| e.effect != "lumetri");
+        let m = it.effects.iter_mut().find(|e| e.effect == "motion").unwrap();
+        m.params.insert("scale".into(), filmcraft_project::Param::new(ParamValue::Float(50.0)));
+        m.params.insert("position".into(), filmcraft_project::Param::new(ParamValue::Vec2(filmcraft_geom::Vec2::new(w / 4.0, h / 4.0))));
+        Ok(())
+    })
+    .unwrap();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.execute("playhead.set", json!({"time": (it.start + filmcraft_time::Tick(it.duration.0 / 2)).0})).unwrap();
+    let effects = |s: &Session| s.active_sequence().unwrap().find_item(clip).unwrap().1.effects.clone();
+    let (before, undo) = (effects(&s), s.history.undo.len());
+    // a transparent point is refused before Lumetri is applied
+    for mode in ["set", "add", "remove"] {
+        assert!(s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": mode, "x": 0.8, "y": 0.8})).is_err(), "{mode}");
+        assert_eq!(effects(&s), before, "no Lumetri added: {mode}");
+        assert_eq!(s.history.undo.len(), undo, "no undo step: {mode}");
+    }
+    // a point on the placed picture applies Lumetri where effects.apply puts it, before Motion
+    s.execute("lumetri.hslKey", json!({"clip": clip.0, "mode": "set", "x": 0.15, "y": 0.2})).unwrap();
+    let after = effects(&s);
+    let idx = after.iter().position(|e| e.effect == "lumetri").expect("Lumetri applied");
+    assert!(after.iter().position(|e| e.effect == "motion").unwrap() > idx, "Motion follows Lumetri");
+    assert_eq!(after[idx].param("hsl_on").map(|p| &p.value), Some(&ParamValue::Bool(true)));
+}
