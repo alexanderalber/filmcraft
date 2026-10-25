@@ -329,14 +329,7 @@ fn hsl_key_color_pickers_set_add_and_remove_the_picked_point() {
         json!({"clip": clip.0, "mode": "set", "color": [0.2, 1e300, 0.2]}),
         json!({"clip": clip.0, "mode": "set", "x": "left"}),
     ] {
-        let r = s.execute("lumetri.hslKey", p.clone());
-        // a non-numeric x falls back to the centre, the rest is refused
-        if p.get("x").is_some() {
-            assert!(r.is_ok(), "{p}");
-            s.execute("edit.undo", json!({})).unwrap();
-        } else {
-            assert!(r.is_err(), "{p}");
-        }
+        assert!(s.execute("lumetri.hslKey", p.clone()).is_err(), "{p}");
     }
     assert_eq!(param(&s, "hsl_hue"), Some(0.0));
 }
