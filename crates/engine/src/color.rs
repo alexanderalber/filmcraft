@@ -16,7 +16,7 @@ use filmcraft_color::{ColorSpace, Lut, LutFormat, WorkingSpace};
 use filmcraft_project::{ClipId, ItemId, ItemKind, ParamValue, ProjectLut, TrackKind};
 use serde_json::{Value, json};
 
-use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, f64_p, has_seq, item_p, str_p, time_p};
+use crate::commands::{CommandSpec, always, bad, bool_p, clip_p, has_seq, item_p, str_p, time_p};
 use crate::{Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -550,7 +550,12 @@ fn white_balance(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Some(_) => return Err(bad(cmd, "`color` must be [r, g, b]")),
     };
-    let (x, y) = (f64_p(p, "x").unwrap_or(0.5), f64_p(p, "y").unwrap_or(0.5));
+    // 0.5 only when a coordinate is left out: a wrong type is refused, not read as the centre
+    let coord = |k: &str| match p.get(k) {
+        None | Some(Value::Null) => Ok(0.5),
+        Some(v) => v.as_f64().ok_or_else(|| bad(cmd, "`x` and `y` must be numbers")),
+    };
+    let (x, y) = (coord("x")?, coord("y")?);
     if !x.is_finite() || !y.is_finite() {
         return Err(bad(cmd, "`x` and `y` must be numbers"));
     }

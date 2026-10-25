@@ -308,6 +308,7 @@ fn white_balance_selector_neutralises_the_picked_point() {
         json!({"clip": clip.0, "color": ["a", 0.2, 0.2]}),
         json!({"clip": clip.0, "color": "white"}),
         json!({"clip": clip.0, "color": [-1.0, 1e30, 0.2]}),
+        json!({"clip": clip.0, "x": "left"}),
     ] {
         assert!(s.execute("lumetri.whiteBalance", p.clone()).is_err(), "{p}");
     }
