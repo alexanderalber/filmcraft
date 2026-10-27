@@ -221,10 +221,11 @@ fn to_tick(t: &filmcraft_matroska::Track, pts: i64) -> Tick {
 
 /// A time as the track timestamp to look a frame up by: rounded to the nearest tick, as muxers
 /// round frame times to `TimestampScale` (usually 1 ms). Flooring skipped every frame whose
-/// timestamp was rounded up (every third frame at 30 fps).
-fn from_tick(t: &filmcraft_matroska::Track, time: Tick) -> i64 {
+/// timestamp was rounded up (every third frame at 30 fps). See [`crate::gop::lookup_time`] for
+/// timestamp units as long as a frame.
+fn from_tick(t: &filmcraft_matroska::Track, rate: FrameRate, time: Tick) -> i64 {
     let (n, d) = tb(t);
-    time.to_rational_round(n, d)
+    crate::gop::lookup_time(time, n, d, rate)
 }
 
 /// VP9 configuration from the Matroska `CodecPrivate` feature list (ID / length / value triples:
@@ -616,8 +617,9 @@ impl MediaSource for MkvSource {
     fn video_frame(&self, req: FrameRequest) -> Result<Arc<VideoFrame>, MediaError> {
         let ti = self.vtrack.ok_or(MediaError::NoStream("video"))?;
         let t = req.time.max(Tick::ZERO);
-        let target = from_tick(&self.file.tracks[ti], t);
-        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], t - m));
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let target = from_tick(&self.file.tracks[ti], rate, t);
+        let late = filmcraft_media::cancel::catch_up().map(|m| from_tick(&self.file.tracks[ti], rate, t - m));
         Ok(self.video.frame_late(&MkvVideo { src: self, track: ti }, target, late)?)
     }
 

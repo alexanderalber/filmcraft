@@ -378,10 +378,10 @@ impl Mp4Source {
     fn video_at(&self, t: Tick) -> crate::Result<Arc<VideoFrame>> {
         let ti = self.vtrack.ok_or_else(|| CodecError::Unsupported("no video".into()))?;
         let ts = self.file.tracks[ti].timescale as i64;
-        // Nearest, not floor: with a coarse timescale (1000) sample times are rounded, and a
-        // floored lookup lands one unit short of every frame whose time was rounded up.
-        let late = filmcraft_media::cancel::catch_up().map(|m| (t - m).to_rational_round(1, ts));
-        self.video.frame_late(&Mp4Video { src: self, track: ti }, t.to_rational_round(1, ts), late)
+        let rate = self.info.video.as_ref().map(|v| v.frame_rate).unwrap_or_default();
+        let at = |t: Tick| crate::gop::lookup_time(t, 1, ts, rate);
+        let late = filmcraft_media::cancel::catch_up().map(|m| at(t - m));
+        self.video.frame_late(&Mp4Video { src: self, track: ti }, at(t), late)
     }
 
     /// Decoded packet `i` of audio stream `a` (`ainfo` is its `AudioStreamInfo`; `st` its decoder state).

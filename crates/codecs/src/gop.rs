@@ -123,6 +123,22 @@ pub trait VideoSamples: Sync {
     fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>>;
 }
 
+/// The track time (units of `num / den` s) to look up the frame shown at `t` by, for a track whose
+/// nominal rate is `rate`.
+///
+/// Rounded to the nearest unit (#73): muxers round frame times to the timescale (Matroska usually
+/// to 1 ms), so a stamp can sit up to half a unit after the true time, and flooring missed every
+/// frame stamped late. That tolerance is only harmless while a unit is short against a frame. With
+/// a unit of half a frame or more (an MP4 whose timescale is its frame rate, one unit per frame),
+/// half a unit is a quarter of a frame or more, and from its middle on every frame was looked up
+/// as the next one. Such a track can't place frames between its units anyway, so the request
+/// first moves back to the start of its frame, which then rounds onto that frame's own stamp.
+pub(crate) fn lookup_time(t: filmcraft_time::Tick, num: i64, den: i64, rate: filmcraft_time::FrameRate) -> i64 {
+    let unit = filmcraft_time::Tick::from_rational(1, num, den);
+    let coarse = unit.0.saturating_mul(2) >= rate.frame_duration().0;
+    (if coarse { rate.snap(t) } else { t }).to_rational_round(num, den)
+}
+
 /// A container's sync sample for `i` when leading pictures need the GOP before: `sync` is the
 /// index's own sync sample, `leads(i, key)` says `i` is shown before `key`. One step per GOP, so a
 /// loop: a crafted index can chain tens of thousands of GOPs (#2803). A `sync` past `i` stops the

@@ -235,3 +235,82 @@ fn mp4_variable_rate_and_on_grid_frame_times_stay_put() {
     }
     assert!(failures.is_empty(), "{}", failures[..failures.len().min(8)].join("\n"));
 }
+
+/// Asks for every frame at its start, its middle and nine tenths in, expects that frame each time.
+fn inside_frame_problems(src: &dyn MediaSource, rate: FrameRate) -> Vec<String> {
+    let frame = rate.frame_duration().0;
+    let mut wrong = Vec::new();
+    for k in 0..frame_count(rate) {
+        for tenths in [0, 5, 9] {
+            let t = rate.tick_of(k as i64) + Tick(frame / 10 * tenths);
+            let got = index_of(&src.video_frame(FrameRequest::full(t)).unwrap());
+            if got != k {
+                wrong.push(format!("frame {k} + {tenths}/10: got {got}"));
+            }
+        }
+    }
+    wrong
+}
+
+/// An MP4 whose timescale is `per_frame` units per frame of `rate` (an integer rate), every sample
+/// that many units long.
+fn mp4_units_per_frame(rate: FrameRate, per_frame: u32) -> Arc<[u8]> {
+    let ts = (rate.num / rate.den) as u32 * per_frame;
+    let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
+    let t = w.add_track(TrackConfig::new(SampleEntry::jpeg((BITS * BLOCK) as u16, BLOCK as u16), ts)).unwrap();
+    for k in 0..frame_count(rate) {
+        w.write_sample(t, WriteSample { data: &picture(k), duration: per_frame, composition_offset: 0, is_sync: true }).unwrap();
+    }
+    w.finish().unwrap().into_inner().into()
+}
+
+/// An MP4 muxed with timescale = frame rate (one unit per frame, as penumbra writes its recordings):
+/// half a unit is half a frame, so rounding to the nearest unit showed the next frame from every
+/// frame's middle on. Two units per frame had the same problem from three quarters in.
+#[test]
+fn mp4_with_a_timescale_of_one_or_two_units_per_frame_finds_the_frame_inside_it() {
+    let mut failures = Vec::new();
+    for rate in [FrameRate::FPS_24, FrameRate::FPS_25, FrameRate::FPS_30, FrameRate::FPS_60] {
+        for per_frame in [1, 2] {
+            let src = crate::open_bytes("synthetic.mov", mp4_units_per_frame(rate, per_frame)).unwrap();
+            for p in inside_frame_problems(src.as_ref(), rate).into_iter().take(3) {
+                failures.push(format!("{rate}, {per_frame} units per frame: {p}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "mov:\n{}", failures.join("\n"));
+}
+
+/// A Matroska file whose `TimestampScale` is one frame of `rate` in whole nanoseconds, `scale_ns`
+/// (rounded down or up where a frame is no whole number of them).
+fn mkv_scale(rate: FrameRate, scale_ns: u64) -> Arc<[u8]> {
+    let mut spec = TrackSpec::new(TrackKind::Video, "V_MJPEG");
+    spec.video_size = Some((BITS * BLOCK, BLOCK));
+    spec.default_duration_ns = Some(scale_ns);
+    let opts = MuxOptions { timestamp_scale: scale_ns, ..MuxOptions::default() };
+    let mut w = MkvWriter::new(Cursor::new(Vec::new()), vec![spec], opts).unwrap();
+    for k in 0..frame_count(rate) {
+        let ns = (k as i128 * 1_000_000_000 * rate.den as i128 / rate.num as i128) as i64;
+        w.write_frame(0, ns, true, &picture(k), None).unwrap();
+    }
+    w.finish().unwrap().into_inner().into()
+}
+
+/// The same for Matroska with a timestamp unit of one frame: exact at 25 fps, a fraction of a
+/// nanosecond short of or past the frame at 24, 30 and 60 fps.
+#[test]
+fn mkv_with_a_timestamp_unit_of_one_frame_finds_the_frame_inside_it() {
+    let mut failures = Vec::new();
+    for rate in [FrameRate::FPS_24, FrameRate::FPS_25, FrameRate::FPS_30, FrameRate::FPS_60] {
+        let exact = 1_000_000_000 * rate.den as u64;
+        let floor = exact / rate.num as u64;
+        let ceil = exact.div_ceil(rate.num as u64);
+        for scale_ns in if floor == ceil { vec![floor] } else { vec![floor, ceil] } {
+            let src = crate::open_bytes("synthetic.mkv", mkv_scale(rate, scale_ns)).unwrap();
+            for p in inside_frame_problems(src.as_ref(), rate).into_iter().take(3) {
+                failures.push(format!("{rate}, {scale_ns} ns units: {p}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "mkv:\n{}", failures.join("\n"));
+}
