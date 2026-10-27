@@ -174,8 +174,13 @@ fn mp4_with_frames_on_the_grid_shows_every_frame_once() {
 
 /// An MP4 at 90 kHz with these sample durations.
 fn mp4_90k(durations: &[u32]) -> Arc<[u8]> {
+    mp4_durations(90_000, durations)
+}
+
+/// An MP4 at timescale `ts` with the given sample durations.
+fn mp4_durations(ts: u32, durations: &[u32]) -> Arc<[u8]> {
     let mut w = Mp4Writer::new(Cursor::new(Vec::new()), WriterOptions::new(Brand::Mov)).unwrap();
-    let t = w.add_track(TrackConfig::new(SampleEntry::jpeg((BITS * BLOCK) as u16, BLOCK as u16), 90_000)).unwrap();
+    let t = w.add_track(TrackConfig::new(SampleEntry::jpeg((BITS * BLOCK) as u16, BLOCK as u16), ts)).unwrap();
     for (k, &duration) in durations.iter().enumerate() {
         w.write_sample(t, WriteSample { data: &picture(k), duration, composition_offset: 0, is_sync: true }).unwrap();
     }
@@ -313,4 +318,43 @@ fn mkv_with_a_timestamp_unit_of_one_frame_finds_the_frame_inside_it() {
         }
     }
     assert!(failures.is_empty(), "mkv:\n{}", failures.join("\n"));
+}
+
+/// A Matroska file with `TimestampScale` `scale_ns` and a frame at each of `starts` (units of it).
+fn mkv_starts(scale_ns: u64, starts: &[i64]) -> Arc<[u8]> {
+    let mut spec = TrackSpec::new(TrackKind::Video, "V_MJPEG");
+    spec.video_size = Some((BITS * BLOCK, BLOCK));
+    let opts = MuxOptions { timestamp_scale: scale_ns, ..MuxOptions::default() };
+    let mut w = MkvWriter::new(Cursor::new(Vec::new()), vec![spec], opts).unwrap();
+    for (k, &s) in starts.iter().enumerate() {
+        w.write_frame(0, s * scale_ns as i64, true, &picture(k), None).unwrap();
+    }
+    w.finish().unwrap().into_inner().into()
+}
+
+/// A coarse unit is no constant rate: at two units a frame (timescale 50, nominal 25 fps), a track
+/// with one sample a unit long has a frame starting between two nominal frames. Moving a request
+/// at that start back to its nominal frame would show the frame before; such a track keeps the
+/// lookup by the nearest unit, in both containers.
+#[test]
+fn variable_rate_track_with_a_coarse_unit_keeps_its_off_grid_frame() {
+    let durations = [2u32, 1, 2, 2, 2, 2, 2, 2];
+    let starts: Vec<i64> = durations.iter().scan(0i64, |t, &d| Some(std::mem::replace(t, *t + i64::from(d)))).collect();
+    let sources = [
+        ("mov", crate::open_bytes("synthetic.mov", mp4_durations(50, &durations)).unwrap()),
+        ("mkv", crate::open_bytes("synthetic.mkv", mkv_starts(20_000_000, &starts)).unwrap()),
+    ];
+    let mut failures = Vec::new();
+    for (name, src) in &sources {
+        assert_eq!(src.info().video.as_ref().unwrap().frame_rate, FrameRate::FPS_25, "{name}: nominal rate");
+        // every unit up to the last frame: the last frame starting at or before it
+        for t in 0..=*starts.last().unwrap() {
+            let want = starts.iter().rposition(|&s| s <= t).unwrap();
+            let got = index_of(&src.video_frame(FrameRequest::full(Tick::from_rational(t, 1, 50))).unwrap());
+            if got != want {
+                failures.push(format!("{name}: at {t}/50 s wanted frame {want}, got {got}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
