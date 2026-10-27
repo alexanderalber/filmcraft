@@ -48,6 +48,7 @@ fn char_style_key(id: &str) -> Option<&'static str> {
         "faux_bold" => "bold",
         "faux_italic" => "italic",
         "underline" => "underline",
+        "strikethrough" => "strikethrough",
         "tracking" => "tracking",
         "baseline_shift" => "baselineShift",
         "caps" => "caps",
@@ -593,12 +594,19 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("all_caps", "TT", tl!("All Caps"), caps == 1, Tokens::ui(12.0)),
                 ("small_caps", "Tt", tl!("Small Caps"), caps == 2, Tokens::ui(12.0)),
                 ("underline", "U", tl!("Underline"), flag("underline"), Tokens::ui(13.0)),
+                ("strikethrough", "S", tl!("Strikethrough"), flag("strikethrough"), Tokens::ui(13.0)),
             ] {
                 let r = letter_button(&mut vui, label, tip, on, &t, font);
                 if id == "faux_italic" {
                     // slanted stroke to read as italic
                     let c = r.rect.center();
                     vui.painter().line_segment([c + vec2(-5.0, 6.0), c + vec2(5.0, -6.0)], Stroke::new(0.8, t.text_faint));
+                }
+                if id == "strikethrough" {
+                    // the stroke through the letter
+                    let c = r.rect.center();
+                    let col = if on || r.hovered() { t.text } else { t.text_dim };
+                    vui.painter().line_segment([c + vec2(-6.0, 0.5), c + vec2(6.0, 0.5)], Stroke::new(1.0, col));
                 }
                 cx.auto(id, r.rect, tip);
                 if r.clicked() {
