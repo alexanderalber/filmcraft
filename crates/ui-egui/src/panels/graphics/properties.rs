@@ -1,4 +1,5 @@
 use super::*;
+use filmcraft_project::graphic_design::{CharStyle, range_styles};
 
 // ---------------------------------------------------------------------------------------------
 // Properties / Essential Graphics
@@ -36,6 +37,8 @@ struct Ctx<'a> {
     autos: Vec<(String, Rect, String)>,
     /// Characters selected with the Type tool in this layer: character properties apply to them.
     range: Option<(usize, usize)>,
+    /// The character overrides of each selected character (empty without a selection).
+    chars: Vec<CharStyle>,
 }
 
 /// Character properties a Type-tool selection can carry, with their `graphics.setCharStyle` names.
@@ -57,6 +60,32 @@ fn char_style_key(id: &str) -> Option<&'static str> {
 }
 
 impl Ctx<'_> {
+    /// A Style button's state: on when every selected character has `id` (its own override, else
+    /// the layer's value); without a Type-tool selection, the layer's value.
+    fn char_flag(&self, id: &str) -> bool {
+        let layer = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
+        self.chars.iter().all(|c| {
+            match id {
+                "faux_bold" => c.faux_bold,
+                "faux_italic" => c.faux_italic,
+                "underline" => c.underline,
+                "strikethrough" => c.strikethrough,
+                _ => None,
+            }
+            .unwrap_or(layer)
+        })
+    }
+    /// The caps mode (0 normal, 1 all caps, 2 small caps) all selected characters share, the
+    /// layer's without a selection; `None` when the selection mixes them.
+    fn char_caps(&self) -> Option<u32> {
+        let layer = match pv(self.e, "caps", self.mt) {
+            ParamValue::Choice(c) => c,
+            _ => 0,
+        };
+        let mut caps = self.chars.iter().map(|c| c.caps.unwrap_or(layer));
+        let first = caps.next().unwrap_or(layer);
+        caps.all(|c| c == first).then_some(first)
+    }
     fn set(&mut self, id: &str, v: Value) {
         if let (Some((a, b)), Some(k)) = (self.range, char_style_key(id)) {
             self.actions.push(("graphics.setCharStyle".into(), json!({"clip": self.clip.0, "layer": self.layer, "start": a, "end": b, "style": {k: v}})));
@@ -503,7 +532,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let ch = |b: usize| text.get(..b.min(text.len())).map_or(0, |s| s.chars().count());
             Some((ch(ed.caret.min(ed.anchor)), ch(ed.caret.max(ed.anchor))))
         });
-        let mut cx = Ctx { clip, layer: l, eidx: idx[l], e, mt, t, actions: Vec::new(), autos: Vec::new(), range };
+        let chars = range.map_or_else(Vec::new, |(a, b)| range_styles(e.layer.as_ref().map_or(&[], |x| &x.runs), graphic::text_chars(e, mt), a, b));
+        let mut cx = Ctx { clip, layer: l, eidx: idx[l], e, mt, t, actions: Vec::new(), autos: Vec::new(), range, chars };
         if section(ui, app, "Responsive Design - Position", &t) {
             crate::panels::graphics_templates::responsive_position(app, ui, clip, &it, l, &mut cx.autos, &mut cx.actions);
         }
@@ -632,26 +662,22 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.number(ui, tl!("Text Box Width"), NumberField { id: "box_width", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             cx.number(ui, tl!("Text Box Height"), NumberField { id: "box_height", speed: 2.0, range: (0.0, 100_000.0), decimals: 0, unit: "" });
             let (_, mut vui) = cx.row(ui, tl!("Style"));
-            let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
-            let caps = match pv(e, "caps", mt) {
-                ParamValue::Choice(c) => c,
-                _ => 0,
-            };
+            let caps = cx.char_caps();
             for (id, label, tip, on, font) in [
-                ("faux_bold", "T", tl!("Faux Bold"), flag("faux_bold"), Tokens::semibold(14.0)),
-                ("faux_italic", "T", tl!("Faux Italic"), flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
-                ("all_caps", "TT", tl!("All Caps"), caps == 1, Tokens::ui(12.0)),
-                ("small_caps", "Tt", tl!("Small Caps"), caps == 2, Tokens::ui(12.0)),
-                ("underline", "U", tl!("Underline"), flag("underline"), Tokens::ui(13.0)),
-                ("strikethrough", "S", tl!("Strikethrough"), flag("strikethrough"), Tokens::ui(13.0)),
+                ("faux_bold", "T", tl!("Faux Bold"), cx.char_flag("faux_bold"), Tokens::semibold(14.0)),
+                ("faux_italic", "T", tl!("Faux Italic"), cx.char_flag("faux_italic"), egui::FontId::new(14.0, egui::FontFamily::Proportional)),
+                ("all_caps", "TT", tl!("All Caps"), caps == Some(1), Tokens::ui(12.0)),
+                ("small_caps", "Tt", tl!("Small Caps"), caps == Some(2), Tokens::ui(12.0)),
+                ("underline", "U", tl!("Underline"), cx.char_flag("underline"), Tokens::ui(13.0)),
+                ("strikethrough", "S", tl!("Strikethrough"), cx.char_flag("strikethrough"), Tokens::ui(13.0)),
             ] {
                 let r = letter_button(&mut vui, label, tip, on, &t, font);
                 letter_button_mark(&vui, id, &r, on, &t);
                 cx.auto(id, r.rect, tip);
                 if r.clicked() {
                     match id {
-                        "all_caps" => cx.set("caps", json!(if caps == 1 { 0 } else { 1 })),
-                        "small_caps" => cx.set("caps", json!(if caps == 2 { 0 } else { 2 })),
+                        "all_caps" => cx.set("caps", json!(if caps == Some(1) { 0 } else { 1 })),
+                        "small_caps" => cx.set("caps", json!(if caps == Some(2) { 0 } else { 2 })),
                         _ => cx.set(id, json!(!on)),
                     }
                 }

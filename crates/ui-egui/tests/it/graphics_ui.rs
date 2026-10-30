@@ -320,6 +320,33 @@ fn shadow_color_drag_is_one_undo_step() {
     assert_eq!(color(&mut d), before, "one undo restores the original color");
 }
 
+/// With a Type-tool selection the Style buttons show and toggle the selected characters' style,
+/// not the layer's: a second click turns Faux Bold (or All Caps) off again.
+#[test]
+fn style_buttons_toggle_the_selected_characters() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics","tool":"Type"}));
+    d.exec("playhead.set", json!({"seconds":2}));
+    d.frames(3);
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x":p[0]+p[2]*0.2,"y":p[1]+p[3]*0.35}));
+    d.ok("ui.type", json!({"text":"Night Drive"}));
+    for _ in 0..5 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowLeft"}));
+    }
+    d.frames(3);
+    let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    for (id, key, on, off) in [("faux_bold", "fauxBold", json!(true), json!(false)), ("all_caps", "caps", json!(1), json!(0))] {
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        assert_eq!(styles(&mut d)[0][key], on, "first click styles the selection: {}", styles(&mut d));
+        d.ok("ui.click", json!({"id": format!("graphics.prop.{id}")}));
+        d.frames(3);
+        let st = styles(&mut d);
+        assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0][key].clone()), (json!(6), json!(11), off), "second click unstyles it: {st}");
+    }
+}
+
 /// Character ranges use setCharStyle, but must share the same one-gesture undo rule as a layer.
 #[test]
 fn selected_character_size_drag_is_one_undo_step() {
