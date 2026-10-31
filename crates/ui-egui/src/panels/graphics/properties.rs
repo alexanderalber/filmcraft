@@ -64,6 +64,9 @@ impl Ctx<'_> {
     /// the layer's value); without a Type-tool selection, the layer's value.
     fn char_flag(&self, id: &str) -> bool {
         let layer = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
+        if self.chars.is_empty() {
+            return layer;
+        }
         self.chars.iter().all(|c| {
             match id {
                 "faux_bold" => c.faux_bold,

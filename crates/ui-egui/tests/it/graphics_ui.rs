@@ -347,6 +347,34 @@ fn style_buttons_toggle_the_selected_characters() {
     }
 }
 
+/// Without a Type-tool selection the Style buttons show and toggle the layer's style: an unstyled
+/// layer's buttons are off, so a click turns the style on (an empty selection counted as "every
+/// selected character has it", so the click wrote `false`).
+#[test]
+fn style_buttons_toggle_the_layer_without_a_selection() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    let r = d.exec("graphics.newText", json!({"text": "Title"}));
+    let clip = r["clip"].as_u64().unwrap();
+    d.exec("graphics.selectLayer", json!({"clip": clip, "layers": [0]}));
+    d.frames(4);
+    for id in ["faux_bold", "faux_italic", "underline", "strikethrough"] {
+        let on = |d: &mut Driver| text_param(d, clip, id).and_then(|v| v.as_bool()).unwrap_or(false);
+        // near the button's left edge: in the test window the panel's scrollbar covers the
+        // middle of the last button of the row
+        let click = |d: &mut Driver| {
+            let b = d.rect(&format!("graphics.prop.{id}"));
+            d.ok("ui.click", json!({"x": b[0] + 4.0, "y": b[1] + b[3] / 2.0}));
+            d.frames(3);
+        };
+        assert!(!on(&mut d), "{id} starts off");
+        click(&mut d);
+        assert!(on(&mut d), "first click turns {id} on");
+        click(&mut d);
+        assert!(!on(&mut d), "second click turns {id} off");
+    }
+}
+
 /// Character ranges use setCharStyle, but must share the same one-gesture undo rule as a layer.
 #[test]
 fn selected_character_size_drag_is_one_undo_step() {
