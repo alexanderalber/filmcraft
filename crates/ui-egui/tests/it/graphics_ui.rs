@@ -347,6 +347,44 @@ fn style_buttons_toggle_the_selected_characters() {
     }
 }
 
+/// A selection whose characters mix a style shows its button off (on only when every selected
+/// character has it), so a click styles all of them; reading the first character alone showed it
+/// on, and the click unstyled the characters that had it.
+#[test]
+fn style_button_on_a_mixed_selection_styles_all_of_it() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace":"Captions and Graphics","tool":"Type"}));
+    d.exec("playhead.set", json!({"seconds":2}));
+    d.frames(3);
+    let p = d.rect("program.picture");
+    d.ok("ui.click", json!({"x":p[0]+p[2]*0.2,"y":p[1]+p[3]*0.35}));
+    d.ok("ui.type", json!({"text":"Night Drive"}));
+    for _ in 0..5 {
+        d.ok("ui.key", json!({"key":"ArrowLeft"}));
+    }
+    for _ in 0..2 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowRight"}));
+    }
+    d.frames(3);
+    let styles = |d: &mut Driver| d.exec("graphics.list", json!({}))["layers"][0]["styles"].clone();
+    d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert_eq!((st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()), (json!(6), json!(8), json!(true)), "\"Dr\" is bold: {st}");
+    for _ in 0..3 {
+        d.ok("ui.key", json!({"key":"Shift+ArrowRight"}));
+    }
+    d.frames(3);
+    d.ok("ui.click", json!({"id":"graphics.prop.faux_bold"}));
+    d.frames(3);
+    let st = styles(&mut d);
+    assert_eq!(
+        (st[0]["start"].clone(), st[0]["end"].clone(), st[0]["fauxBold"].clone()),
+        (json!(6), json!(11), json!(true)),
+        "the click bolds all of \"Drive\": {st}"
+    );
+}
+
 /// Without a Type-tool selection the Style buttons show and toggle the layer's style: an unstyled
 /// layer's buttons are off, so a click turns the style on (an empty selection counted as "every
 /// selected character has it", so the click wrote `false`).
